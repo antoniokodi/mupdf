@@ -11,6 +11,7 @@
 
 static int x_factor = 0;
 static int y_factor = 0;
+static int use_intervals = 0;
 
 static void usage(void)
 {
@@ -174,6 +175,94 @@ static void decimatepages(fz_context *ctx, pdf_document *doc)
 	pdf_dict_put_drop(ctx, pages, PDF_NAME(Kids), kids);
 }
 
+static void decimatepages3(fz_context* ctx, pdf_document* doc, float x_factors[], int x_factors_size)
+{
+	pdf_obj* oldroot, * root, * pages, * kids;
+	int num_pages = pdf_count_pages(ctx, doc);
+	int page, kidcount;
+	fz_rect mediabox;
+	fz_matrix page_ctm;
+
+	oldroot = pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root));
+	pages = pdf_dict_get(ctx, oldroot, PDF_NAME(Pages));
+
+	root = pdf_new_dict(ctx, doc, 2);
+	pdf_dict_put(ctx, root, PDF_NAME(Type), pdf_dict_get(ctx, oldroot, PDF_NAME(Type)));
+	pdf_dict_put(ctx, root, PDF_NAME(Pages), pdf_dict_get(ctx, oldroot, PDF_NAME(Pages)));
+
+	pdf_update_object(ctx, doc, pdf_to_num(ctx, oldroot), root);
+
+	pdf_drop_obj(ctx, root);
+
+	/* Create a new kids array with our new pages in */
+	kids = pdf_new_array(ctx, doc, 1);
+
+	kidcount = 0;
+	for (page = 0; page < num_pages; page++)
+	{
+		pdf_page* page_details = pdf_load_page(ctx, doc, page);
+		float userunit = 72;
+		pdf_obj* obj = pdf_dict_get(ctx, page_details->obj, PDF_NAME(UserUnit));
+		if (pdf_is_real(ctx, obj))
+			userunit = pdf_to_real(ctx, obj);
+		fz_rect size = pdf_bound_page(ctx, page_details); // suppose that the default 72 dpi is used when the UserUnit not specified in PDF
+
+		float w, h;
+
+		pdf_page_transform(ctx, page_details, &mediabox, &page_ctm);
+
+		fz_drop_page(ctx, (fz_page*)page_details);
+
+		w = mediabox.x1 - mediabox.x0;
+		h = mediabox.y1 - mediabox.y0;
+
+		float x0 = mediabox.x0;
+
+		for (int i = 0; i < x_factors_size; i += 2)
+		{
+
+			pdf_obj* newpageobj, * newpageref, * newmediabox;
+			fz_rect mb;
+
+			newpageobj = pdf_copy_dict(ctx, pdf_lookup_page_obj(ctx, doc, page));
+			pdf_flatten_inheritable_page_items(ctx, newpageobj);
+			newpageref = pdf_add_object(ctx, doc, newpageobj);
+
+			newmediabox = pdf_new_array(ctx, doc, 4);
+
+			mb.x0 = x_factors[i];
+			mb.x1 = x_factors[i + 1];
+			mb.y0 = mediabox.y0;
+			mb.y1 = mediabox.y1;
+			x0 = mb.x1;
+
+			pdf_array_push_real(ctx, newmediabox, mb.x0);
+			pdf_array_push_real(ctx, newmediabox, mb.y0);
+			pdf_array_push_real(ctx, newmediabox, mb.x1);
+			pdf_array_push_real(ctx, newmediabox, mb.y1);
+
+			pdf_dict_put(ctx, newpageobj, PDF_NAME(Parent), pages);
+			pdf_dict_put_drop(ctx, newpageobj, PDF_NAME(MediaBox), newmediabox);
+
+			intersect_box(ctx, doc, newpageobj, PDF_NAME(CropBox), mb);
+			intersect_box(ctx, doc, newpageobj, PDF_NAME(BleedBox), mb);
+			intersect_box(ctx, doc, newpageobj, PDF_NAME(TrimBox), mb);
+			intersect_box(ctx, doc, newpageobj, PDF_NAME(ArtBox), mb);
+
+			/* Store page object in new kids array */
+			pdf_drop_obj(ctx, newpageobj);
+			pdf_array_push_drop(ctx, kids, newpageref);
+
+			kidcount++;
+
+		}
+	}
+
+	/* Update page count and kids array */
+	pdf_dict_put_int(ctx, pages, PDF_NAME(Count), kidcount);
+	pdf_dict_put_drop(ctx, pages, PDF_NAME(Kids), kids);
+}
+
 int pdfposter_main(int argc, char **argv)
 {
 	char *infile;
@@ -184,12 +273,31 @@ int pdfposter_main(int argc, char **argv)
 	pdf_document *doc;
 	fz_context *ctx;
 
+	float x_factors[300];
+	int x_factors_size = 0;
+
 	while ((c = fz_getopt(argc, argv, "x:y:p:")) != -1)
 	{
 		switch (c)
 		{
 		case 'p': password = fz_optarg; break;
-		case 'x': x_factor = atoi(fz_optarg); break;
+		case 'x':
+		{
+			char* ptr = strtok(fz_optarg, ",");
+			int i = 0;
+			do {
+				size_t size = strlen(ptr);
+				char* tmp = malloc(sizeof(char) * size + 1);
+				strcpy(tmp, ptr);
+				x_factors[i] = atof(tmp);
+				free(tmp);
+				i++;
+				ptr = strtok(NULL, ",");
+			} while (ptr != NULL);
+			x_factors_size = i;
+			x_factor = x_factors[0];
+			break;
+		}
 		case 'y': y_factor = atoi(fz_optarg); break;
 		default: usage(); break;
 		}
@@ -218,7 +326,22 @@ int pdfposter_main(int argc, char **argv)
 		if (!pdf_authenticate_password(ctx, doc, password))
 			fz_throw(ctx, FZ_ERROR_GENERIC, "cannot authenticate password: %s", infile);
 
-	decimatepages(ctx, doc);
+	if (use_intervals == 0) {
+		if (x_factors_size == 1) {
+			decimatepages(ctx, doc);
+		}
+		else {
+			printf("number of -x parameters must be one when using without -i");
+		}
+	}
+	else {
+		if (x_factors_size > 1 && x_factors_size % 2 == 0) {
+			decimatepages3(ctx, doc, x_factors, x_factors_size);
+		}
+		else {
+			printf("number of -x parameters must be even when using -i");
+		}
+	}
 
 	pdf_save_document(ctx, doc, outfile, &opts);
 
