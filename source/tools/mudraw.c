@@ -132,10 +132,10 @@ static const format_cs_table_t format_cs_table[] =
 	{ OUT_PNG, CS_RGB, { CS_GRAY, CS_GRAY_ALPHA, CS_RGB, CS_RGB_ALPHA, CS_ICC } },
 	{ OUT_PPM, CS_RGB, { CS_GRAY, CS_RGB } },
 	{ OUT_PNM, CS_GRAY, { CS_GRAY, CS_RGB } },
-	{ OUT_PAM, CS_RGB_ALPHA, { CS_GRAY, CS_GRAY_ALPHA, CS_RGB, CS_RGB_ALPHA, CS_CMYK, CS_CMYK_ALPHA } },
+	{ OUT_PAM, CS_RGB_ALPHA, { CS_GRAY, CS_GRAY_ALPHA, CS_RGB, CS_RGB_ALPHA, CS_CMYK, CS_CMYK_ALPHA, CS_ICC } },
 	{ OUT_PGM, CS_GRAY, { CS_GRAY, CS_RGB } },
 	{ OUT_PBM, CS_MONO, { CS_MONO } },
-	{ OUT_PKM, CS_CMYK, { CS_CMYK } },
+	{ OUT_PKM, CS_CMYK, { CS_CMYK, CS_ICC } },
 	{ OUT_PWG, CS_RGB, { CS_MONO, CS_GRAY, CS_RGB, CS_CMYK } },
 	{ OUT_PCL, CS_MONO, { CS_MONO, CS_RGB } },
 	{ OUT_PCLM, CS_RGB, { CS_RGB, CS_GRAY } },
@@ -243,7 +243,8 @@ static char *format = NULL;
 static int output_format = OUT_NONE;
 
 static float rotation = 0;
-static float resolution = 72;
+static float resolution_x = 72;
+static float resolution_y = 72;
 static int res_specified = 0;
 static int width = 0;
 static int height = 0;
@@ -610,11 +611,13 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 	else if (output_format == OUT_TEXT || output_format == OUT_HTML || output_format == OUT_XHTML || output_format == OUT_STEXT)
 	{
 		fz_stext_page *text = NULL;
-		float zoom;
+		float zoom_x;
+		float zoom_y;
 		fz_matrix ctm;
 
-		zoom = resolution / 72;
-		ctm = fz_pre_scale(fz_rotate(rotation), zoom, zoom);
+		zoom_x = resolution_x / 72;
+		zoom_y = resolution_y / 72;
+		ctm = fz_pre_scale(fz_rotate(rotation), zoom_x, zoom_y);
 
 		fz_var(text);
 
@@ -710,7 +713,8 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 
 	else if (output_format == OUT_SVG)
 	{
-		float zoom;
+		float zoom_x;
+		float zoom_y;
 		fz_matrix ctm;
 		fz_rect tbounds;
 		char buf[512];
@@ -718,8 +722,9 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 
 		fz_var(outs);
 
-		zoom = resolution / 72;
-		ctm = fz_pre_rotate(fz_scale(zoom, zoom), rotation);
+		zoom_x = resolution_x / 72;
+		zoom_y = resolution_y / 72;
+		ctm = fz_pre_rotate(fz_scale(zoom_x, zoom_y), rotation);
 		tbounds = fz_transform_rect(mediabox, ctm);
 
 		fz_try(ctx)
@@ -757,7 +762,8 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 	}
 	else
 	{
-		float zoom;
+		float zoom_x;
+		float zoom_y;
 		fz_matrix ctm;
 		fz_rect tbounds;
 		fz_irect ibounds;
@@ -769,8 +775,9 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 		fz_var(bander);
 		fz_var(bit);
 
-		zoom = resolution / 72;
-		ctm = fz_pre_scale(fz_rotate(rotation), zoom, zoom);
+		zoom_x = resolution_x / 72;
+		zoom_y = resolution_y / 72;
+		ctm = fz_pre_scale(fz_rotate(rotation), zoom_x, zoom_y);
 
 		tbounds = fz_transform_rect(mediabox, ctm);
 		ibounds = fz_round_rect(tbounds);
@@ -856,7 +863,7 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 					memset(&workers[band].cookie, 0, sizeof(fz_cookie));
 					workers[band].list = list;
 					workers[band].pix = fz_new_pixmap_with_bbox(ctx, colorspace, band_ibounds, seps, alpha);
-					fz_set_pixmap_resolution(ctx, workers[band].pix, resolution, resolution);
+					fz_set_pixmap_resolution(ctx, workers[band].pix, resolution_x, resolution_y);
 #ifndef DISABLE_MUTHREADS
 					DEBUG_THREADS(("Worker %d, Pre-triggering band %d\n", band, band));
 					mu_trigger_semaphore(&workers[band].start);
@@ -868,7 +875,7 @@ static void dodrawpage(fz_context *ctx, fz_page *page, fz_display_list *list, in
 			else
 			{
 				pix = fz_new_pixmap_with_bbox(ctx, colorspace, band_ibounds, seps, alpha);
-				fz_set_pixmap_resolution(ctx, pix, resolution, resolution);
+				fz_set_pixmap_resolution(ctx, pix, resolution_x, resolution_y);
 			}
 
 			/* Output any page level headers (for banded formats) */
@@ -1560,6 +1567,22 @@ static void save_accelerator(fz_context *ctx, fz_document *doc, const char *fnam
 	fz_save_accelerator(ctx, doc, absname);
 }
 
+void set_resolution(char* fz_optarg, float* res_x, float* res_y, int* res_specified) {
+	float temp_res_x = *res_x;
+	float temp_res_y = *res_y;
+	if (sscanf(fz_optarg, "%fx%f", res_x, res_y) == 2) {
+		*res_specified = 1;
+	}
+	else if (sscanf(fz_optarg, "%f", res_x) == 1) {
+		*res_specified = 1;
+		*res_y = *res_x;
+	}
+	else {
+		*res_x = temp_res_x;
+		*res_y = temp_res_y;
+	}
+}
+
 #ifdef MUDRAW_STANDALONE
 int main(int argc, char **argv)
 #else
@@ -1590,7 +1613,7 @@ int mudraw_main(int argc, char **argv)
 		case 'F': format = fz_optarg; break;
 
 		case 'R': rotation = fz_atof(fz_optarg); break;
-		case 'r': resolution = fz_atof(fz_optarg); res_specified = 1; break;
+		case 'r': set_resolution(fz_optarg, &resolution_x, &resolution_y, &res_specified); break;
 		case 'w': width = fz_atof(fz_optarg); break;
 		case 'h': height = fz_atof(fz_optarg); break;
 		case 'f': fit = 1; break;
